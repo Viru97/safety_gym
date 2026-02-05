@@ -62,7 +62,7 @@ class BaseEnvConfig:
     collision_penalty: float = -100.0
     survival_reward: float = 1.0
     movement_penalty_scale: float = 0.5
-    action_smoothness_scale: float = 0.1
+    action_smoothness_scale: float = 0.5
     threat_passage_reward: float = 10.0
     conservative_bonus_scale: float = 0.3
 
@@ -126,6 +126,7 @@ class BaseEnv(ABC):
         self.ego_vy_target = 0.0
         self.prev_action = 0.0
 
+        self.collision_occurred = False  # ADD THIS
         # Spawn object
         self._spawn_object()
 
@@ -345,66 +346,80 @@ class ConservativeAvoidanceEnv(BaseEnv):
 
         return obs
 
+    # def _compute_reward(self, action: float, collision: bool) -> float:
+    #     """
+    #     Conservative reward design that encourages:
+    #     1. Avoiding collisions (highest priority)
+    #     2. Staying still when safe
+    #     3. Minimal movement when threatened
+    #     4. Smooth actions
+    #     """
+    #     reward = 0.0
+    #     components = {}
+    #
+    #     # 1. Collision penalty (terminal)
+    #     if collision:
+    #         components['collision'] = self.cfg.collision_penalty
+    #         reward += components['collision']
+    #         self._last_reward_components = components
+    #         return reward
+    #
+    #     # 2. Survival reward (base reward for each step alive)
+    #     components['survival'] = self.cfg.survival_reward
+    #     reward += components['survival']
+    #
+    #     # 3. Movement penalty - penalize any movement
+    #     speed = abs(self.ego_vy)
+    #     movement_penalty = -self.cfg.movement_penalty_scale * speed
+    #     components['movement'] = movement_penalty
+    #     reward += movement_penalty
+    #
+    #     # 4. Action smoothness - penalize large action changes
+    #     action_change = abs(action - self.prev_action)
+    #     smoothness_penalty = -self.cfg.action_smoothness_scale * action_change
+    #     components['smoothness'] = smoothness_penalty
+    #     reward += smoothness_penalty
+    #
+    #     # 5. Conservative bonus - reward staying still when safe
+    #     _, d_min = self._compute_ttca_and_dmin()
+    #     if not self.threat_active and speed < self.cfg.stillness_threshold:
+    #         conservative_bonus = self.cfg.conservative_bonus_scale
+    #         components['conservative'] = conservative_bonus
+    #         reward += conservative_bonus
+    #     else:
+    #         components['conservative'] = 0.0
+    #
+    #     # 6. Threat passage reward - reward successfully avoiding a threat
+    #     if self.threat_passed and not self.collision_occurred:
+    #         components['threat_passed'] = self.cfg.threat_passage_reward
+    #         reward += components['threat_passed']
+    #         self.threat_passed = False  # Reset flag
+    #     else:
+    #         components['threat_passed'] = 0.0
+    #
+    #     # 7. Safety margin reward - encourage maintaining safe distance
+    #     if self._is_object_in_fov() and d_min > self.cfg.safe_distance:
+    #         safety_bonus = 0.2
+    #         components['safety'] = safety_bonus
+    #         reward += safety_bonus
+    #     else:
+    #         components['safety'] = 0.0
+    #
+    #     self._last_reward_components = components
+    #     return reward
+
     def _compute_reward(self, action: float, collision: bool) -> float:
-        """
-        Conservative reward design that encourages:
-        1. Avoiding collisions (highest priority)
-        2. Staying still when safe
-        3. Minimal movement when threatened
-        4. Smooth actions
-        """
-        reward = 0.0
-        components = {}
-
-        # 1. Collision penalty (terminal)
+        """Simple reward function for testing."""
         if collision:
-            components['collision'] = self.cfg.collision_penalty
-            reward += components['collision']
-            self._last_reward_components = components
-            return reward
+            return -1000.0
 
-        # 2. Survival reward (base reward for each step alive)
-        components['survival'] = self.cfg.survival_reward
-        reward += components['survival']
+        reward = 0.1
 
-        # 3. Movement penalty - penalize any movement
-        speed = abs(self.ego_vy)
-        movement_penalty = -self.cfg.movement_penalty_scale * speed
-        components['movement'] = movement_penalty
-        reward += movement_penalty
+        # Penalize movement when no threat
+        if not self.threat_active:
+            reward -= 1.0 * action * action
 
-        # 4. Action smoothness - penalize large action changes
-        action_change = abs(action - self.prev_action)
-        smoothness_penalty = -self.cfg.action_smoothness_scale * action_change
-        components['smoothness'] = smoothness_penalty
-        reward += smoothness_penalty
-
-        # 5. Conservative bonus - reward staying still when safe
-        _, d_min = self._compute_ttca_and_dmin()
-        if not self.threat_active and speed < self.cfg.stillness_threshold:
-            conservative_bonus = self.cfg.conservative_bonus_scale
-            components['conservative'] = conservative_bonus
-            reward += conservative_bonus
-        else:
-            components['conservative'] = 0.0
-
-        # 6. Threat passage reward - reward successfully avoiding a threat
-        if self.threat_passed and not self.collision_occurred:
-            components['threat_passed'] = self.cfg.threat_passage_reward
-            reward += components['threat_passed']
-            self.threat_passed = False  # Reset flag
-        else:
-            components['threat_passed'] = 0.0
-
-        # 7. Safety margin reward - encourage maintaining safe distance
-        if self._is_object_in_fov() and d_min > self.cfg.safe_distance:
-            safety_bonus = 0.2
-            components['safety'] = safety_bonus
-            reward += safety_bonus
-        else:
-            components['safety'] = 0.0
-
-        self._last_reward_components = components
+        self._last_reward_components = {"base": reward}
         return reward
 
     def _check_termination(self, collision: bool) -> Tuple[bool, TerminationReason]:
@@ -523,26 +538,35 @@ class EnvRenderer:
                         (origin[0], origin[1] - 10), (origin[0], origin[1] + 10), 2)
 
     def draw_ego(self) -> None:
-        """Draw the ego robot."""
+        """Draw the ego robot with collision visualization."""
         cfg = self.env.cfg
         surface = self.main_surface
 
         pos = self.world_to_screen(*self.env.ego_pos)
         radius = int(cfg.ego_radius * self.scale)
 
-        # Color based on state
-        if self.env.threat_active:
-            color = self.colors["ego_danger"]
+        # Color logic with collision detection
+        if self.env.collision_occurred:
+            # COLLISION STATE: Flash red/white
+            color = (255, 50, 50) if int(self.env.step_count * 10) % 2 else (255, 255, 255)
+        elif self.env.threat_active:
+            color = self.colors["ego_danger"]  # Orange-red
         elif abs(self.env.ego_vy) > cfg.stillness_threshold:
-            color = self.colors["ego_moving"]
+            color = self.colors["ego_moving"]  # Yellow
         else:
-            color = self.colors["ego_safe"]
+            color = self.colors["ego_safe"]  # Green
 
+        # Draw ego circle
         pygame.draw.circle(surface, color, pos, radius)
         pygame.draw.circle(surface, (255, 255, 255), pos, radius, 2)
 
-        # Velocity indicator
-        if abs(self.env.ego_vy) > 0.01:
+        # Collision explosion effect
+        if self.env.collision_occurred:
+            explosion_radius = radius + int(10 * math.sin(self.env.step_count * 0.3))
+            pygame.draw.circle(surface, (255, 100, 0, 100), pos, explosion_radius, 5)
+
+        # Velocity indicator (only if not collided)
+        if abs(self.env.ego_vy) > 0.01 and not self.env.collision_occurred:
             vel_scale = 30
             end_y = pos[1] - int(self.env.ego_vy * vel_scale)
             pygame.draw.line(surface, (255, 255, 0), pos, (pos[0], end_y), 3)
@@ -580,24 +604,28 @@ class EnvRenderer:
         y_offset = 10
         line_height = 25
 
+        collision_status = "COLLISION!" if self.env.collision_occurred else "Safe"
+        threat_status = "ACTIVE" if self.env.threat_active else "None"
+
         info_texts = [
             f"Step: {self.env.step_count}/{self.env.cfg.max_episode_steps}",
             f"Reward: {reward:.2f}",
             f"Action: {action:.3f}",
             f"Ego vy: {self.env.ego_vy:.3f} m/s",
-            f"Threat: {'ACTIVE' if self.env.threat_active else 'None'}",
+            f"Threat: {threat_status}",
+            f"Collision: {collision_status}",
             f"Status: {self.env.termination_reason.value}",
         ]
 
         for i, text in enumerate(info_texts):
-            rendered = self.font.render(text, True, self.colors["text"])
+            color = (255, 100, 100) if "COLLISION!" in text else self.colors["text"]
+            rendered = self.font.render(text, True, color)
             surface.blit(rendered, (10, y_offset + i * line_height))
 
         # Draw reward components
-        if hasattr(self.env, '_last_reward_components'):
+        if hasattr(self.env, '_last_reward_components') and self.env._last_reward_components:
             y_offset = 10
-            x_offset = self.width - 250
-
+            x_offset = self.width - 280
             comp_text = self.font.render("Reward Components:", True, self.colors["text"])
             surface.blit(comp_text, (x_offset, y_offset))
             y_offset += line_height

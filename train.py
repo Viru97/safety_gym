@@ -18,7 +18,7 @@ import numpy as np
 from typing import Callable, Optional, Tuple, Dict, Any
 from collections import deque
 import json
-
+import glob
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -450,7 +450,7 @@ def train(args):
 
 
 def evaluate(args):
-    """Evaluate trained model."""
+    """Evaluate trained model. Automatically finds latest model if --model_path not specified."""
     try:
         from rsl_rl.modules import ActorCritic
     except ImportError:
@@ -466,23 +466,41 @@ def evaluate(args):
     # Environment
     config = BaseEnvConfig(max_episode_steps=args.max_episode_steps)
     env = ConservativeAvoidanceEnv(config)
-
     renderer = EnvRenderer(env, scale=20.0) if args.render else None
 
-    # Load model
-    print(f"Loading: {args.model_path}")
+    # Auto-find latest model
+    model_path = args.model_path
+    if model_path is None:
+        # Find most recent training run
+        log_dirs = glob.glob("logs/*")
+        if not log_dirs:
+            print("Error: No training runs found in logs/safestop_*")
+            sys.exit(1)
 
-    # Create a dummy observation dict with the right shape
+        latest_log_dir = max(log_dirs, key=os.path.getmtime)
+
+        # Look for final_model.pt first, then any model_*.pt
+        final_model = os.path.join(latest_log_dir, "final_model.pt")
+        if os.path.exists(final_model):
+            model_path = final_model
+        else:
+            model_files = glob.glob(os.path.join(latest_log_dir, "model_*.pt"))
+            if model_files:
+                model_path = max(model_files, key=os.path.getmtime)
+            else:
+                print(f"Error: No models found in {latest_log_dir}")
+                sys.exit(1)
+
+        print(f"Auto-detected latest model: {model_path}")
+        print(f"Training run: {latest_log_dir}")
+
+    print(f"Loading: {model_path}")
+
+    # Load policy
     dummy_obs = {"observations": torch.zeros(1, env.obs_dim, device=device)}
-
-    obs_groups = {
-        "policy": ["observations"],
-        "critic": ["observations"]
-    }
+    obs_groups = {"policy": ["observations"], "critic": ["observations"]}
 
     policy = ActorCritic(
-        num_actor_obs=env.obs_dim,
-        num_critic_obs=env.obs_dim,
         num_actions=env.action_dim,
         actor_hidden_dims=args.hidden_dims,
         critic_hidden_dims=args.hidden_dims,
@@ -492,9 +510,10 @@ def evaluate(args):
         obs_groups=obs_groups,
     ).to(device)
 
-    checkpoint = torch.load(args.model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device)
     policy.load_state_dict(checkpoint['model_state_dict'])
     policy.eval()
+
     print("Model loaded.")
 
     # Run episodes
@@ -516,7 +535,7 @@ def evaluate(args):
 
             while not done:
                 obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-                obs_dict = {"observations": obs_tensor}  # <-- ADD THIS
+                obs_dict = {"observations": obs_tensor}
                 with torch.no_grad():
                     action = policy.act_inference(obs_dict)
                 action_val = action.cpu().numpy().flatten()[0]
@@ -536,9 +555,7 @@ def evaluate(args):
                     renderer.render(reward=reward, action=action_val)
                     for event in pygame.event.get():
                         if event.type == pygame.QUIT or (
-                            event.type == pygame.KEYDOWN and
-                            event.key in [pygame.K_q, pygame.K_ESCAPE]
-                        ):
+                                event.type == pygame.KEYDOWN and event.key in [pygame.K_q, pygame.K_ESCAPE]):
                             renderer.close()
                             return
                         if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
@@ -547,42 +564,41 @@ def evaluate(args):
                             steps = 0
                             speeds = []
                             still_count = 0
-                    renderer.tick(8)
+                            renderer.tick(8)
 
             episode_returns.append(total_reward)
             episode_lengths.append(steps)
             episode_speeds.append(np.mean(speeds) if speeds else 0.0)
-            episode_stillness.append(still_count / steps if steps > 0 else 0.0)
+            episode_stillness.append((still_count / steps * 100.0) if steps > 0 else 0.0)
 
             if info.get('collision', False):
                 collisions += 1
             elif info.get('termination_reason') in ['timeout', 'success']:
                 successes += 1
 
-            print(f"Ep {ep+1}/{args.num_episodes}: "
-                  f"reward={total_reward:.2f}, steps={steps}, "
-                  f"avg_speed={episode_speeds[-1]:.3f}, "
-                  f"stillness={episode_stillness[-1]*100:.1f}%, "
+            print(f"Ep {ep + 1}/{args.num_episodes}: reward={total_reward:.2f}, "
+                  f"steps={steps}, avg_speed={episode_speeds[-1]:.3f}, "
+                  f"stillness={episode_stillness[-1]:.1f}%, "
                   f"reason={info.get('termination_reason', 'none')}")
 
     except KeyboardInterrupt:
         print("\nInterrupted")
+
     finally:
         if renderer:
             renderer.close()
 
     if episode_returns:
-        print(f"\n{'='*60}")
-        print("EVALUATION SUMMARY")
-        print(f"{'='*60}")
+        print(f"\n{'=' * 60}")
+        print("SUMMARY")
+        print(f"{'=' * 60}")
         print(f"Episodes: {len(episode_returns)}")
         print(f"Return: {np.mean(episode_returns):.2f} ± {np.std(episode_returns):.2f}")
         print(f"Length: {np.mean(episode_lengths):.1f} ± {np.std(episode_lengths):.1f}")
         print(f"Avg Speed: {np.mean(episode_speeds):.3f} ± {np.std(episode_speeds):.3f} m/s")
-        print(f"Stillness: {np.mean(episode_stillness)*100:.1f}% ± {np.std(episode_stillness)*100:.1f}%")
-        print(f"Collision Rate: {collisions/len(episode_returns)*100:.1f}%")
-        print(f"Success Rate: {successes/len(episode_returns)*100:.1f}%")
-        print(f"{'='*60}")
+        print(f"Stillness: {np.mean(episode_stillness):.1f} ± {np.std(episode_stillness):.1f}%")
+        print(f"Collision: {collisions / len(episode_returns) * 100:.1f}%")
+        print(f"Success: {successes / len(episode_returns) * 100:.1f}%")
 
 
 if __name__ == "__main__":
@@ -625,8 +641,9 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None)
 
     # Evaluation
-    parser.add_argument("--model_path", type=str, default=None)
-    parser.add_argument("--num_episodes", type=int, default=10)
+    parser.add_argument("--model_path", type=str, default=None,
+                        help="Path to model. If None, auto-detects latest.")
+    parser.add_argument("--num_episodes", type=int, default=50)
     parser.add_argument("--render", action="store_true")
 
     # Device
@@ -637,7 +654,4 @@ if __name__ == "__main__":
     if args.mode == "train":
         train(args)
     elif args.mode == "eval":
-        if args.model_path is None:
-            print("Error: --model_path required for eval mode")
-            sys.exit(1)
-        evaluate(args)
+        evaluate(args)  # No model_path check - auto-detects now
