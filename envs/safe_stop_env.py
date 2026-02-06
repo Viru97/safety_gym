@@ -54,15 +54,15 @@ class BaseEnvConfig:
     fov_range: float = 20.0   # meters
 
     # Thresholds
-    threat_threshold: float = 0.2  # meters, below this d_min = threat
+    threat_threshold: float = 0.5  # meters, below this d_min = threat (increased)
     stillness_threshold: float = 0.1  # m/s
-    safe_distance: float = 1.0  # meters, safe clearance distance
+    safe_distance: float = 2.0  # meters, safe clearance distance (INCREASED - key parameter!)
 
     # Reward weights
-    collision_penalty: float = -100.0
+    collision_penalty: float = -1000.0
     survival_reward: float = 1.0
-    movement_penalty_scale: float = 0.5
-    action_smoothness_scale: float = 0.5
+    movement_penalty_scale: float = 1.0
+    action_smoothness_scale: float = 1.0
     threat_passage_reward: float = 10.0
     conservative_bonus_scale: float = 0.3
 
@@ -241,7 +241,7 @@ class BaseEnv(ABC):
         _, d_min = self._compute_ttca_and_dmin()
 
         # Check if object passed by checking x-position
-        if self.obj_pos[0] < self.ego_pos[0] - 2.0:
+        if self.obj_pos[0] < self.ego_pos[0] - 0.5:
             if self.threat_active and not self.threat_passed:
                 self.threat_passed = True
             self.threat_active = False
@@ -346,81 +346,104 @@ class ConservativeAvoidanceEnv(BaseEnv):
 
         return obs
 
-    # def _compute_reward(self, action: float, collision: bool) -> float:
-    #     """
-    #     Conservative reward design that encourages:
-    #     1. Avoiding collisions (highest priority)
-    #     2. Staying still when safe
-    #     3. Minimal movement when threatened
-    #     4. Smooth actions
-    #     """
-    #     reward = 0.0
-    #     components = {}
-    #
-    #     # 1. Collision penalty (terminal)
-    #     if collision:
-    #         components['collision'] = self.cfg.collision_penalty
-    #         reward += components['collision']
-    #         self._last_reward_components = components
-    #         return reward
-    #
-    #     # 2. Survival reward (base reward for each step alive)
-    #     components['survival'] = self.cfg.survival_reward
-    #     reward += components['survival']
-    #
-    #     # 3. Movement penalty - penalize any movement
-    #     speed = abs(self.ego_vy)
-    #     movement_penalty = -self.cfg.movement_penalty_scale * speed
-    #     components['movement'] = movement_penalty
-    #     reward += movement_penalty
-    #
-    #     # 4. Action smoothness - penalize large action changes
-    #     action_change = abs(action - self.prev_action)
-    #     smoothness_penalty = -self.cfg.action_smoothness_scale * action_change
-    #     components['smoothness'] = smoothness_penalty
-    #     reward += smoothness_penalty
-    #
-    #     # 5. Conservative bonus - reward staying still when safe
-    #     _, d_min = self._compute_ttca_and_dmin()
-    #     if not self.threat_active and speed < self.cfg.stillness_threshold:
-    #         conservative_bonus = self.cfg.conservative_bonus_scale
-    #         components['conservative'] = conservative_bonus
-    #         reward += conservative_bonus
-    #     else:
-    #         components['conservative'] = 0.0
-    #
-    #     # 6. Threat passage reward - reward successfully avoiding a threat
-    #     if self.threat_passed and not self.collision_occurred:
-    #         components['threat_passed'] = self.cfg.threat_passage_reward
-    #         reward += components['threat_passed']
-    #         self.threat_passed = False  # Reset flag
-    #     else:
-    #         components['threat_passed'] = 0.0
-    #
-    #     # 7. Safety margin reward - encourage maintaining safe distance
-    #     if self._is_object_in_fov() and d_min > self.cfg.safe_distance:
-    #         safety_bonus = 0.2
-    #         components['safety'] = safety_bonus
-    #         reward += safety_bonus
-    #     else:
-    #         components['safety'] = 0.0
-    #
-    #     self._last_reward_components = components
-    #     return reward
-
     def _compute_reward(self, action: float, collision: bool) -> float:
-        """Simple reward function for testing."""
+        """
+        FIXED Conservative reward design:
+
+        KEY PRINCIPLE: Only penalize movement when there's NO real threat!
+        If d_min is large (object will pass safely), heavily reward stillness.
+        """
+        reward = 0.0
+        components = {}
+
+        # 1. Collision penalty (terminal)
         if collision:
-            return -1000.0
+            components['collision'] = self.cfg.collision_penalty
+            reward += components['collision']
+            self._last_reward_components = components
+            return reward
 
-        reward = 0.1
+        # Get threat information
+        ttca, d_min = self._compute_ttca_and_dmin()
+        speed = abs(self.ego_vy)
+        is_still = speed < self.cfg.stillness_threshold
 
-        # Penalize movement when no threat
-        if not self.threat_active:
-            reward -= 1.0 * action * action
+        # 2. Survival reward (base reward for each step alive)
+        components['survival'] = self.cfg.survival_reward
+        reward += components['survival']
 
-        self._last_reward_components = {"base": reward}
+        # 3. CRITICAL: Distinguish between safe and dangerous scenarios
+        # If d_min > safe_distance, object will pass safely - STAY STILL!
+        if d_min > self.cfg.safe_distance and self._is_object_in_fov():
+            # SAFE SCENARIO - heavily reward stillness, heavily penalize movement
+            if is_still:
+                # Big reward for staying still when safe
+                still_bonus = 5.0
+                components['safe_still'] = still_bonus
+                reward += still_bonus
+            else:
+                # Big penalty for moving when safe
+                unnecessary_movement_penalty = -10.0 * speed
+                components['safe_moving'] = unnecessary_movement_penalty
+                reward += unnecessary_movement_penalty
+
+            components['movement'] = 0.0  # Don't double-penalize
+
+        elif d_min < self.cfg.safe_distance and self._is_object_in_fov():
+            # DANGER SCENARIO - allow movement, but prefer efficiency
+            # Small penalty for movement (encourage minimal avoidance)
+            movement_penalty = -0.5 * speed
+            components['movement'] = movement_penalty
+            reward += movement_penalty
+
+            components['safe_still'] = 0.0
+            components['safe_moving'] = 0.0
+
+        else:
+            # NO OBJECT IN FOV - definitely stay still
+            if is_still:
+                still_bonus = 3.0
+                components['no_obj_still'] = still_bonus
+                reward += still_bonus
+            else:
+                unnecessary_penalty = -5.0 * speed
+                components['no_obj_moving'] = unnecessary_penalty
+                reward += unnecessary_penalty
+
+            components['movement'] = 0.0
+            components['safe_still'] = 0.0
+            components['safe_moving'] = 0.0
+
+        # 4. Action smoothness - penalize jerky movements
+        action_change = abs(action - self.prev_action)
+        smoothness_penalty = -0.5 * action_change  # Linear, not quadratic
+        components['smoothness'] = smoothness_penalty
+        reward += smoothness_penalty
+
+        # 5. Threat passage reward - bonus for successfully avoiding
+        if self.threat_passed and not self.collision_occurred:
+            components['threat_passed'] = self.cfg.threat_passage_reward
+            reward += components['threat_passed']
+            self.threat_passed = False  # Reset flag
+        else:
+            components['threat_passed'] = 0.0
+
+        self._last_reward_components = components
         return reward
+
+    # def _compute_reward(self, action: float, collision: bool) -> float:
+    #     """Simple reward function for testing."""
+    #     if collision:
+    #         return -1000.0
+    #
+    #     reward = 0.1
+    #
+    #     # Penalize movement when no threat
+    #     if not self.threat_active:
+    #         reward -= 1.0 * action * action
+    #
+    #     self._last_reward_components = {"base": reward}
+    #     return reward
 
     def _check_termination(self, collision: bool) -> Tuple[bool, TerminationReason]:
         """Check termination conditions."""

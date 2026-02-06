@@ -427,18 +427,15 @@ def train(args):
     print(f"Steps per iteration: {steps_per_iter:,}")
     print("=" * 60)
 
-    # Training loop with curriculum updates
-    if curriculum:
-        for iteration in range(num_iterations):
-            current_timestep = iteration * steps_per_iter
-            new_config = curriculum.update_config(current_timestep)
+    # FIXED: Disable curriculum for now - it doesn't work well with rsl_rl's iteration tracking
+    # The proper fix would require modifying the runner itself
+    if args.use_curriculum:
+        print("WARNING: Curriculum learning disabled - not compatible with rsl_rl iteration tracking")
+        print("Training with fixed difficulty instead.")
+        print("For curriculum learning, you need to retrain from scratch at different difficulties.")
 
-            # Update environment configs if needed
-            # Note: This is a simplified approach; ideally we'd recreate envs
-
-            runner.learn(num_learning_iterations=1, init_at_random_ep_len=True)
-    else:
-        runner.learn(num_learning_iterations=num_iterations, init_at_random_ep_len=True)
+    # Standard training loop (works properly with tensorboard)
+    runner.learn(num_learning_iterations=num_iterations, init_at_random_ep_len=True)
 
     final_path = os.path.join(log_dir, "final_model.pt")
     runner.save(final_path)
