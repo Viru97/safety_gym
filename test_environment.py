@@ -152,7 +152,7 @@ def test_vectorized_environment():
     print("="*60)
     
     try:
-        from train import VecEnvWrapper, GymEnvWrapper
+        from scripts.train import VecEnvWrapper, GymEnvWrapper
         
         def make_env():
             env = ConservativeAvoidanceEnv(BaseEnvConfig())
