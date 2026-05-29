@@ -13,11 +13,9 @@ Unlike standard RL agents that tend to exhibit erratic, "jittery" behavior, the 
 
 ## 📸 Demo
 
-*(Add a GIF here showing your trained agent successfully dodging a complex obstacle)*
-> **Figure 1:** The agent (green) detects an incoming threat (red), calculates the minimum distance at the closest point of approach (`d_min`), and executes a minimal-movement dodge before returning to a complete stop.
+![Demo showing agent avoiding obstacles & staying still when obstacle passes safely](assets/output.gif)
+*Figure: The agent (green) detects an incoming threat (red), calculates the minimum distance at the closest point of approach (`d_min`), and executes a minimal-movement dodge before returning to a complete stop.*
 
-*(Add a second GIF showing the agent staying still when an obstacle passes safely)*
-> **Figure 2:** The agent correctly identifies that the object's trajectory poses no threat and remains perfectly still, maximizing its conservative reward.
 
 ---
 
@@ -30,10 +28,12 @@ To achieve "smooth and lazy" behavior, the environment relies on advanced kinema
 ### The Reward Structure
 1. **Collision Penalty:** A terminal penalty of `-1000` for failing to avoid an obstacle.
 2. **Survival Base:** A small positive reward (`+1.0`) for every step survived.
-3. **The Conservative Bonus (The Secret Sauce):**
-   * **Safe Scenario (`d_min > safe_distance`):** If the obstacle will naturally miss the robot, the agent receives a massive bonus (`+5.0`) for keeping its velocity near 0 m/s. Any movement during a safe scenario is heavily penalized (`-10.0 * speed`).
-   * **Danger Scenario (`d_min < safe_distance`):** If a collision is imminent, the stillness bonus is removed. The agent is allowed to move, but incurs a minor penalty proportional to its speed (`-0.5 * speed`) to encourage the *minimal viable dodge*.
-4. **Smoothness:** A penalty based on the difference between the current and previous action to prevent high-frequency oscillations.
+3. **Context-Aware Movement:**
+   * **Safe Scenario (`d_min > safe_distance`, in FOV):** Staying still yields a bonus (`+5.0`). Any movement is heavily penalized (`-10.0 * speed`).
+   * **Danger Scenario (`d_min < safe_distance`, in FOV):** Movement is allowed but lightly penalized (`-0.5 * speed`) to encourage the *minimal viable dodge*.
+   * **No Object / Out of FOV:** Stillness is rewarded (`+3.0`), movement is discouraged (`-5.0 * speed`).
+4. **Smoothness:** A penalty (`-0.5 * |Δaction|`) to prevent high-frequency oscillations.
+5. **Threat Passage Bonus:** A one-time bonus (`+10.0`) when the obstacle safely passes without collision.
 
 ---
 
@@ -59,9 +59,9 @@ The agent perceives its environment through a 14-element vector, bounded between
 Training an agent to understand complex spatial threats from scratch is highly inefficient. This project utilizes a custom **Stable Baselines3 Callback** to implement Curriculum Learning. 
 
 As training progresses (measured by total timesteps), the environment seamlessly scales in difficulty:
-1. **Stage 1 (Easy):** Objects spawn far away and move slowly (`vx_range: -1.0 to -0.5`).
-2. **Stage 2 (Medium):** Object speed increases.
-3. **Stage 3 (Hard):** Objects spawn closer and move at maximum speed (`vx_range: -2.0 to -0.5`), requiring immediate, highly precise reaction times.
+1. **Stage 1 (Easy):** Objects move slowly (`vx_range: -1.0 to -0.5`).
+2. **Stage 2 (Medium):** Object speed increases (`vx_range: -1.5 to -0.5`).
+3. **Stage 3 (Hard):** Objects move at maximum speed (`vx_range: -2.0 to -0.5`), requiring immediate, highly precise reaction times.
 
 ---
 
